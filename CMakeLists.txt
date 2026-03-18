@@ -3,4 +3,6 @@ project(EmbeddedCoroutines)
 
 set(CMAKE_CXX_STANDARD 26)
 
-add_executable(EmbeddedCoroutines main.cpp)
+add_executable(EmbeddedCoroutines main.cpp
+        EmbCoroutines/EmbCoroutines.cpp
+        EmbCoroutines/EmbCoroutines.hpp)

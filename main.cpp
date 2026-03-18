@@ -1,89 +1,78 @@
 #include <coroutine>
 #include <iostream>
 #include <print>
-
-bool byte_available();
-uint8_t read_byte();
-void send_byte(uint8_t);
+#include "EmbCoroutines/EmbCoroutines.hpp"
 
 
-struct ProtocolTask {
-    struct promise_type {
-        static constexpr std::size_t FRAME_SIZE = 256;
+// Awaitable: Waits for a single byte
+struct ByteReader {
+    char* value_ptr;
 
-        static uint8_t pool[FRAME_SIZE];
-        static bool used;
-
-        static void* operator new(std::size_t size) {
-            if (used || size > FRAME_SIZE) {
-                return nullptr; // allocation failure
-            }
-            used = true;
-            return pool;
-        }
-
-        static void operator delete(void*, std::size_t) {
-            used = false;
-        }
-
-        ProtocolTask get_return_object() {
-            return ProtocolTask{
-                std::coroutine_handle<promise_type>::from_promise(*this)
-            };
-        }
-
-        std::suspend_always initial_suspend() noexcept { return {}; }
-        std::suspend_always final_suspend() noexcept { return {}; }
-
-        void return_void() {}
-        void unhandled_exception() {}
-    };
-
-    std::coroutine_handle<promise_type> handle;
-
-    void resume() {
-        if (!handle.done()) {
-            handle.resume();
-        }
+    bool await_ready() { return false; } // Always suspend to wait for data
+    void await_suspend(std::coroutine_handle<>) {
+        // In a real system, you would register this handle with the UART ISR here.
     }
+    char await_resume() { return *value_ptr; }
 };
 
+// Global "register" to simulate hardware
+char UART_DATA_REGISTER = 0;
 
-ProtocolTask protocol() {
-    uint8_t checksum = 0;
+// Helper to wait for next byte
+auto next_byte() {
+    struct Awaiter {
+        bool await_ready() { return false; }
+        // We pause execution here and return control to main loop
+        void await_suspend(std::coroutine_handle<>) {}
+        char await_resume() { return UART_DATA_REGISTER; }
+    };
+    return Awaiter{};
+}
 
-    while (true) {
-        // Wait for start byte
-        uint8_t b;
-        do {
-            co_await std::suspend_always{};
-            if (!byte_available()) continue;
-            b = read_byte();
-        } while (b != 0xAA);
+StaticTask protocol_parser() {
+    printf("  [Co] Parser started.\n");
 
-        // Read payload
-        checksum = 0;
-        for (int i = 0; i < 4; ++i) {
-            do {
-                co_await std::suspend_always{};
-            } while (!byte_available());
+    while(true) {
+        // STATE 1: Wait for Header 0xAA
+        char byte = co_await next_byte();
 
-            uint8_t data = read_byte();
-            checksum ^= data;
+        if (byte != (char)0xAA) {
+            printf("  [Co] Invalid Header: %02x, waiting...\n", (unsigned char)byte);
+            continue;
         }
 
-        // Send response
-        send_byte(checksum);
+        // STATE 2: Read Command
+        char cmd = co_await next_byte();
+
+        // STATE 3: Read Data
+        char data = co_await next_byte();
+
+        printf("  [Co] PACKET RECEIVED: Cmd: %d, Data: %d\n", cmd, data);
     }
 }
 
 int main() {
-    auto task = protocol();
+    printf("Starting System...\n");
 
-    while (true) {
-        task.resume();
-        // other embedded work
+    // 1. Create the coroutine.
+    // This triggers 'operator new', allocates from static buffer,
+    // runs to the first 'co_await', and returns the handle.
+    StaticTask task = protocol_parser();
+
+    // 2. Simulate Incoming Data Stream (0xAA, 0x01, 0x05, 0xFF...)
+    char incoming_stream[] = { 0x00, 0xAA, 0x01, 0x50, 0xAA, 0x02, 0x99 };
+
+    for (char b : incoming_stream) {
+        printf("\n[HW] Receive IRQ: %02x\n", (unsigned char)b);
+
+        // Load data into "register"
+        UART_DATA_REGISTER = b;
+
+        // Resume the coroutine (Tell it data is ready)
+        if (!task.handle.done()) {
+            task.handle.resume();
+        }
     }
 
-    return EXIT_SUCCESS;
+    return 0;
 }
