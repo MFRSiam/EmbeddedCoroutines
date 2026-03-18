@@ -1,67 +1,109 @@
-//
-// Created by mfrfo on 2/6/2026.
-//
+/**
+ * @file    EmbCoroutines.hpp
+ * @brief   Single-header master include for the EmbCoroutines library.
+ *
+ * @details Include this one file to pull the entire library into a translation
+ *          unit.  All components are header-only, so no separate compilation
+ *          step is required.
+ *
+ * ┌──────────────────────────────────────────────────────────────────────────┐
+ * │  EmbCoroutines — Industrial-Grade Embedded C++20 Coroutine Library       │
+ * │                                                                          │
+ * │  Design pillars                                                          │
+ * │  ─────────────────────────────────────────────────────────────────────  │
+ * │  • ZERO heap allocation — all frames and state live in static storage.  │
+ * │  • Multi-coroutine — dozens of concurrent tasks from a single thread.   │
+ * │  • ISR-friendly — safe set_from_isr() on Event / EventGroup.            │
+ * │  • Deterministic — no OS, no dynamic containers, no exceptions.         │
+ * │  • Fully observable — compile-time Stats (EMB_STATS_ENABLED) and        │
+ * │    Trace (EMB_TRACE_ENABLED) with zero overhead when disabled.           │
+ * └──────────────────────────────────────────────────────────────────────────┘
+ *
+ * Quick-start
+ * ───────────
+ * @code
+ * #include "EmbCoroutines/EmbCoroutines.hpp"
+ *
+ * emb::DefaultTask my_task() {
+ *     while (true) {
+ *         co_await emb::yield();
+ *     }
+ * }
+ *
+ * int main() {
+ *     auto t = my_task();
+ *     while (true) {
+ *         emb::g_timer.tick();            // call from SysTick ISR
+ *         emb::g_scheduler.run_once();    // call from main loop
+ *     }
+ * }
+ * @endcode
+ *
+ * Compile-time configuration
+ * ──────────────────────────
+ * All tuneable knobs live in Config.hpp.  Override them BEFORE including
+ * this header, or pass them on the compiler command line:
+ *
+ *   -DEMB_SCHEDULER_QUEUE_DEPTH=64
+ *   -DEMB_MAX_TIMERS=32
+ *   -DEMB_TRACE_ENABLED=1
+ *
+ * Component inventory
+ * ───────────────────
+ *   Config.hpp       — Compile-time knobs and global limits.
+ *   Assert.hpp       — EMB_ASSERT, EMB_TRAP, EMB_TRACE, EMB_WARN.
+ *   StaticPool.hpp   — Slot allocator: StaticPool<SlotSize, SlotCount>.
+ *   Scheduler.hpp    — Round-robin ring-buffer: Scheduler<QueueDepth>.
+ *   Timer.hpp        — Tick-driven sleep: TimerManager<MaxTimers>, sleep_ticks().
+ *   Task.hpp         — Coroutine return type: Task<FrameSize, MaxConcurrent>.
+ *   Awaitables.hpp   — yield(), join().
+ *   Event.hpp        — Binary signal: Event.
+ *   EventGroup.hpp   — Multi-bit flags: EventGroup<MaxWaiters>.
+ *   Channel.hpp      — Typed SPSC queue: Channel<T, Capacity>.
+ *   Semaphore.hpp    — Counting semaphore: Semaphore<MaxWaiters>.
+ *   Mutex.hpp        — Cooperative mutex + RAII guard: Mutex<MaxWaiters>.
+ *
+ * @version  1.0.0
+ * @author   EmbCoroutines Contributors
+ * @license  MIT
+ */
+#pragma once
 
-#ifndef EMBEDDEDCOROUTINES_EMBCOROUTINES_HPP
-#define EMBEDDEDCOROUTINES_EMBCOROUTINES_HPP
+// ── 1. Configuration — must come first ───────────────────────────────────────
+#include "Config.hpp"
 
-#include <coroutine>
-#include <cstdio>
-#include <cstddef>
-#include <new>
+// ── 2. Diagnostics infrastructure ────────────────────────────────────────────
+#include "Assert.hpp"
 
+// ── 3. Memory allocator ───────────────────────────────────────────────────────
+#include "StaticPool.hpp"
 
-alignas(std::max_align_t) static uint8_t g_coroutine_buffer[1024];
-static bool g_buffer_used = false;
+// ── 4. Execution engine ───────────────────────────────────────────────────────
+#include "Scheduler.hpp"
+#include "Timer.hpp"
 
-struct StaticTask {
-    // The Compiler looks for 'promise_type' inside the return type
-    struct promise_type {
+// ── 5. Coroutine return type ──────────────────────────────────────────────────
+#include "Task.hpp"
 
-        // 1. INITIALIZATION
-        StaticTask get_return_object() {
-            return StaticTask{std::coroutine_handle<promise_type>::from_promise(*this)};
-        }
-        std::suspend_never initial_suspend() { return {}; } // Start immediately? Yes.
-        std::suspend_always final_suspend() noexcept { return {}; } // Don't destroy automatically
+// ── 6. Built-in awaitables ────────────────────────────────────────────────────
+#include "Awaitables.hpp"
 
-        void return_void() {}
-        void unhandled_exception() { /* Trap error here */ }
+// ── 7. Synchronisation primitives ────────────────────────────────────────────
+#include "Event.hpp"
+#include "EventGroup.hpp"
+#include "Channel.hpp"
+#include "Semaphore.hpp"
+#include "Mutex.hpp"
 
-        // --------------------------------------------------------
-        // THE MAGIC: Custom Allocator
-        // --------------------------------------------------------
-        // When the compiler wants to create the Frame, it calls this.
-        void* operator new(std::size_t size) {
-            if (size > sizeof(g_coroutine_buffer)) {
-                // Error: Static buffer too small!
-                // In embedded, trigger a blinking LED or assert.
-                return nullptr;
-            }
-            if (g_buffer_used) {
-                // Error: Coroutine re-entrancy not supported in this simple example
-                return nullptr;
-            }
+// ─────────────────────────────────────────────────────────────────────────────
+//  Version string (accessible at runtime for logging / version checks)
+// ─────────────────────────────────────────────────────────────────────────────
+namespace emb {
 
-            g_buffer_used = true;
-            printf("[System] Allocating %zu bytes from static buffer\n", size);
-            return g_coroutine_buffer;
-        }
+/// Library version encoded as (major << 16) | (minor << 8) | patch.
+inline constexpr uint32_t kVersion = (1u << 16) | (0u << 8) | 0u;
 
-        void operator delete(void* ptr, std::size_t size) {
-            printf("[System] Freeing static buffer\n");
-            g_buffer_used = false;
-        }
-    };
+/// Human-readable version string.
+inline constexpr const char* kVersionStr = "1.0.0";
 
-    std::coroutine_handle<promise_type> handle;
-
-    // RAII to clean up
-    ~StaticTask() {
-        if (handle) handle.destroy();
-    }
-};
-
-
-
-#endif //EMBEDDEDCOROUTINES_EMBCOROUTINES_HPP
+} // namespace emb
