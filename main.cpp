@@ -147,14 +147,10 @@ struct Yield {
 Task handle_client(SOCKET client_socket, int client_id) {
     char buffer[1024]{};
     int  bytes_read = 0;
+    int  total_read = 0;
 
-    // ── Phase 1: Wait for the request ────────────────────────────────────────
-    // Because the socket is non-blocking, recv() may return WSAEWOULDBLOCK
-    // meaning "no data yet". We yield back to the event loop and try again
-    // next tick — without blocking the whole server.
-    int total_read = 0;
-
-    while (total_read < sizeof(buffer) - 1) {
+    // ── Phase 1: Wait for the full request ───────────────────────────────────
+    while (total_read < static_cast<int>(sizeof(buffer) - 1)) {
         bytes_read = recv(client_socket,
                           buffer + total_read,
                           static_cast<int>(sizeof(buffer) - 1 - total_read),
@@ -162,14 +158,14 @@ Task handle_client(SOCKET client_socket, int client_id) {
 
         if (bytes_read > 0) {
             total_read += bytes_read;
-            buffer[total_read] = '\0'; // null-terminate current buffer
+            buffer[total_read] = '\0'; // null-terminate what we currently have
 
-            // If we find the end of the HTTP header, we have the full request!
+            // Check if we reached the end of the HTTP headers
             if (std::strstr(buffer, "\r\n\r\n") != nullptr) {
-                break;
+                break; // Got the full request!
             }
-            // Otherwise, loop again. If there's no more data right now,
-            // the next recv() will hit WSAEWOULDBLOCK and yield!
+            // If not, we just loop around. The next recv() will likely return
+            // WSAEWOULDBLOCK, causing the coroutine to yield.
         }
         else if (bytes_read == 0) {
             std::printf("[Client %d] Disconnected cleanly.\n", client_id);
@@ -196,7 +192,7 @@ Task handle_client(SOCKET client_socket, int client_id) {
             "HTTP/1.1 200 OK\r\n"
             "Content-Type: text/plain\r\n"
             "Content-Length: 26\r\n"
-            "Connection: close\r\n"        // FIX: tells browser not to keep-alive
+            "Connection: close\r\n"
             "\r\n"
             "Hello from GET Coroutine!\n";
     } else if (std::strncmp(buffer, "POST", 4) == 0) {
@@ -219,8 +215,6 @@ Task handle_client(SOCKET client_socket, int client_id) {
     }
 
     // ── Phase 3: Send the response (also non-blocking) ───────────────────────
-    // send() may not deliver everything in one call. We loop, yielding as
-    // needed, until every byte is sent.
     std::size_t total_sent = 0;
     std::size_t to_send    = std::strlen(response);
 
@@ -244,7 +238,6 @@ Task handle_client(SOCKET client_socket, int client_id) {
     (void)closesocket(client_socket);
     std::printf("[Client %d] Done. Sent %zu/%zu bytes.\n", client_id, total_sent, to_send);
 }
-
 // ═════════════════════════════════════════════════════════════════════════════
 //  5. MAIN EVENT LOOP
 //
